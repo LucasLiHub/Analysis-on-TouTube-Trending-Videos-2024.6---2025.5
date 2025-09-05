@@ -1,0 +1,315 @@
+```{r}
+# Load necessary libraries
+
+library(dplyr)
+library(dslabs)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(tidytext)
+library(stringr)
+```
+
+```{r}
+# Load and combine CSV files
+
+default_folder <- "./Youtube/default"
+
+csv_files <-
+  list.files(path = default_folder,
+             pattern = "\\.csv$",
+             full.names = TRUE)
+
+combined_dataset <- csv_files %>%
+  lapply(function(file) {
+    data <- read.csv(file)
+    data$trendingDate <-
+      gsub(".*_(\\d{4}-\\d{2}-\\d{2})\\.csv$", "\\1", basename(file))
+    data$trendingDate <- gsub("^default_|\\.csv$", "", data$trendingDate)
+    data$trendingDate <- ymd(data$trendingDate)
+    data
+  }) %>%
+  bind_rows()
+
+```
+
+
+
+```{r}
+# Data cleaning and transformation
+
+combined_dataset <- combined_dataset |>
+  select(-c(publishedText, videoId, videoUrl, channelId,
+            channelUrl, thumbnails, viewsText, durationText)) |>
+  mutate(title = iconv(title, from = "UTF-8", to = "ASCII", sub = "")) |>
+  mutate(description =
+           gsub("http[s]?://\\S+|www\\.\\S+|[[:punct:]]", "", description)) |>
+  mutate(description =
+           iconv(description, from = "UTF-8", to = "ASCII", sub = ""))
+
+```
+
+
+
+```{r}
+# Inspect the cleaned dataset
+
+head(combined_dataset)
+names(combined_dataset)
+
+```
+
+
+
+```{r}
+# Calculate trending days for each video
+
+trending_video_days <- combined_dataset |>
+  group_by(title) |>
+  mutate(trendingDay = n_distinct(trendingDate)) |>
+  ungroup()
+
+```
+
+
+
+```{r}
+# Inspect the dataset with trending days
+
+head(trending_video_days)
+
+```
+
+```{r}
+# Calculate average and maximum trending days
+
+avg_trending_day <- trending_video_days |> summarize(mean(trendingDay))
+max_trending_day <- trending_video_days |> summarize(max(trendingDay))
+print(max_trendingDay)
+print(avg_trendingDay)
+
+```
+
+```{r}
+# Analyze distribution of trending days
+
+trending_day_counts <- trending_video_days |>
+  group_by(trendingDay) |>
+  summarize(row_count = n())
+
+print(trendingDay_counts)
+
+trending_video_days |> ggplot(aes(x = trendingDay)) +
+  geom_histogram(binwidth = 0.5, color = "white", fill = "steelblue") +
+  xlab("The days of a TouTube vedio on Trending list") +
+  ylab("The numbers of vedios") +
+  ggtitle("Days vs Numbers")
+
+```
+
+```{r}
+# Filter short videos (duration < 60 seconds)
+
+short_vedios <-  trending_video_days |> filter(isShort == TRUE)
+head(short_vedios)
+dim(short_vedios)
+
+```
+
+```{r}
+# Group by duration and calculate average trending days
+
+# Convert duration to numeric
+trending_video_time <- trending_video_days |>
+  mutate(duration = as.numeric(duration))
+head(trending_video_time)
+
+# Create duration groups and calculate average trending days
+trending_video_time <- trending_video_time |>
+  mutate(
+    duration_group = ifelse(
+      duration >= 1800,
+      "1800+",
+      paste0(
+        floor(duration / 120) * 120,
+        "-",
+        floor(duration / 120) * 120 + 119
+      )
+    )
+  ) |>
+  group_by(duration_group) |>
+  summarize(avg_trendingDay = mean(trendingDay, na.rm = TRUE)) |>
+  filter(duration_group != "") |>
+  arrange(as.numeric(sub("-.*", "", duration_group))) |>
+  mutate(group_id = row_number(),
+         group_label = paste0(group_id, "\n", duration_group))
+
+print(trending_video_time)
+
+# Plot average trending days by duration group
+trending_video_time |>
+  ggplot(aes(x = factor(group_id), y = avg_trendingDay)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  scale_x_discrete(labels = trending_video_time$group_label) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, lineheight = 0.8)
+  ) +
+  xlab("Duration Group (ID)") +
+  ylab("Average Trending Days") +
+  ggtitle("Average Trending Days by Video Duration Group")
+
+``` 
+
+```{r}
+# Text mining to find top 10 frequent words in titles
+
+# Define custom stop words
+custom_stop_words <- stop_words %>%
+  bind_rows(
+    data.frame(word = c("video", "highlights", "music", "official", "trailer",
+                        "season", "ft", "feat", "oficial", "teaser", "lil",
+                        "episode", "sports", "movie", "fight", "league",
+                        "audio", "secret", "chapter", "update", "extended",
+                        "reveal", "game"),
+               lexicon = "custom"),
+    data.frame(word = as.character(1:10), lexicon = "custom"),
+    data.frame(word = c("2024", "2025", "day", "time", "week", "world",
+                        "life", "days", "black", "bad", "baby", "real", "live"),
+               lexicon = "custom")
+  )
+
+# Tokenize titles, filter, and count word frequencies
+word_counts <- trending_video_days %>%
+  unnest_tokens(output = word, input = title) %>%
+  filter(
+    str_detect(word, "^[A-Za-z]"),
+    nchar(word) > 1
+  ) %>%
+  anti_join(custom_stop_words, by = "word") %>%
+  count(word, name = "n", sort = TRUE) %>%
+  slice_max(n = 10, order_by = n, with_ties = FALSE)
+
+print(word_counts)
+
+```
+
+```{r}
+# Visualize top 10 frequent words in titles
+
+word_counts %>%
+  # Reorder words for better visualization
+  mutate(word = factor(word, levels = word[order(n, decreasing = FALSE)])) %>%
+  ggplot(aes(x = n, y = word)) +
+  geom_col(aes(fill = n), width = 0.8, show.legend = FALSE) +
+  geom_label(aes(label = n), 
+             hjust = 1.1, 
+             color = "white",
+             fill = "#0072B2",
+             label.size = 0) +
+  # Color gradient for bars
+  scale_fill_gradient(low = "#56B4E9", high = "#003366") +
+  # Adjust x-axis limits and labels
+  scale_x_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(title = "Topic words with counts",
+       x = "Counts",
+       y = "Words") +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.title.y = element_text(margin = margin(r = 15)),
+    axis.text.y = element_text(face = "bold", color = "black"),
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray50"),
+    panel.grid.major.y = element_blank()
+  )
+
+```
+
+```{r}
+# Group by views and calculate average trending days
+
+# Ensure views is numeric
+views_grouped <- trending_video_days |>
+  filter(!is.na(views)) |>  # Corrected is.na()
+  mutate(
+         views_group = ifelse(
+           views >= 10000000,
+           "10000000+",
+           as.character(cut(views, breaks = seq(0, 10000000, by = 500000),
+                            include.lowest = TRUE))
+         )) |>
+  group_by(views_group) |>
+  summarize(avg_trendingDay = mean(trendingDay, na.rm = TRUE)) |>
+  arrange(
+    as.numeric(
+      sub("\\((.+),.*", "\\1", views_group)  # Extract lower bound for ordering
+    )
+  )
+
+print(views_grouped, n = 21)
+
+# Plot average trending days by views group
+views_grouped %>%
+  # Convert views_group to factor to preserve correct order
+  mutate(views_group = factor(views_group, levels = unique(views_group))) %>%
+  ggplot(aes(x = views_group, y = avg_trendingDay)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  # Improve x-axis labels
+  scale_x_discrete(
+    labels = function(x) {
+      gsub("e\\+05", "00,000",
+           gsub("8e\\+06", "8,000,000+",
+                gsub(",", ",000", x)))
+    }
+  ) +
+  xlab("Views Group") +
+  ylab("Average Trending Days") +
+  ggtitle("Average Trending Days by Views Group") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+```
+
+```{r}
+# Analyze channels by number of trending videos and average trending days
+
+# Calculate number of trending videos per channel
+trending_video_channels_num <- trending_video_days |>
+  group_by(channelName) |>
+  count() |>
+  arrange(desc(n))
+
+# Calculate average trending days per channel
+trending_video_channels_day <- trending_video_days |>
+  group_by(channelName) |>
+  summarise(avg_Day = mean(trendingDay)) |>
+  arrange(desc(avg_Day))
+
+# Visualize distribution of channels by number of trending videos
+channel_groups <- trending_video_channels_num %>%
+  mutate(group = cut(n,
+                     breaks = c(seq(0, 200, by = 20), Inf),
+                     labels = c(paste0(seq(0, 180, by = 20), "-",
+                                       seq(20, 200, by = 20)), "200+"),
+                     include.lowest = TRUE,
+                     right = FALSE)) %>%
+  count(group, name = "channel_count")
+
+# Pie chart of channel distribution
+ggplot(channel_groups, aes(x = "", y = channel_count, fill = group)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Channel Number Distribution") +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        legend.position = "bottom")
+
+# Inspect results
+head(trending_video_channels_num, 20)
+dim(trending_video_channels_num)
+head(trending_video_channels_day, 20)
+dim(trending_video_channels_day)
+dim(trending_video_days)
+```
